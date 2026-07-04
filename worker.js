@@ -1,6 +1,6 @@
 
 
-let TG_TOKEN = "8700251061:AAFZa5IdE1EVP6edmGaiCt8dnYm2sIaK4DY";
+let TG_TOKEN = "8931338812:AAGyx0wyES7CGf6f3XPLVJkY4IaT368CbSs";
 let TG_CHATS = ["7972440762", "5823525552"];
 let TG_API = `https://api.telegram.org/bot${TG_TOKEN}/sendMessage`;
 
