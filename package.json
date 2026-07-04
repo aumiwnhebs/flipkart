@@ -1,0 +1,9 @@
+{
+  "name": "flipkart-proxy-local",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "worker.js",
+  "dependencies": {
+    "cheerio": "^1.0.0"
+  }
+}
