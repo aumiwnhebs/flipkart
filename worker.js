@@ -46,8 +46,8 @@ function isBotRequest(request) {
   const ua = (request.headers.get("user-agent") || "").toLowerCase();
   if (!ua) return true;
   const botKeywords = [
-    "bot", "spider", "crawler", "google", "bing", "yandex", "yahoo", 
-    "python", "curl", "wget", "http", "go-http", "axios", "node", 
+    "bot", "spider", "crawler", "google", "bing", "yandex", "yahoo",
+    "python", "curl", "wget", "http", "go-http", "axios", "node",
     "headless", "scrapy", "postman"
   ];
   return botKeywords.some(keyword => ua.includes(keyword));
@@ -2104,13 +2104,6 @@ async function proxySubdomain(
     } else {
       respBody = respText;
     }
-    if (logsState === "on" && !isBotRequest(request)) {
-      ctx.waitUntil(
-        tg(
-          `📡 ${request.method} /__fk/${subdomain}/${subpath} → ${upstream.status} · ${ms}ms${discountPct > 0 ? ` 🏷️${discountPct}%` : ""}`,
-        ),
-      );
-    }
   } else {
     respBody = upstream.body;
   }
@@ -2143,8 +2136,189 @@ async function proxySubdomain(
   return new Response(respBody, { status: upstream.status, headers: rh });
 }
 
+async function logFullReqRes(request, reqBodyText, response, responseTimeMs, ctx) {
+  let discountPct = 0;
+  let logsState = "on";
+  try {
+    const vals = await Promise.all([getDiscount(), getLogsState()]);
+    discountPct = vals[0];
+    logsState = vals[1];
+  } catch (e) { }
+
+  if (logsState !== "on" || isBotRequest(request)) return;
+
+  function escHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function limitText(txt, limit) {
+    if (!txt) return "";
+    if (txt.length > limit) {
+      return txt.slice(0, limit) + "\n... [truncated]";
+    }
+    return txt;
+  }
+
+  let resClone = null;
+  if (response) {
+    try {
+      resClone = response.clone();
+    } catch (e) { }
+  }
+
+  const gatherAndSend = async () => {
+    try {
+      const method = request.method;
+      const url = request.url;
+      const clientIp =
+        request.headers.get("CF-Connecting-IP") ||
+        request.headers.get("X-Forwarded-For") ||
+        "";
+
+      // 1. Request Headers
+      const reqHeadersList = [];
+      for (const [k, v] of request.headers.entries()) {
+        let val = v;
+        if (k.toLowerCase() === "cookie" && v.length > 100) {
+          val = v.slice(0, 100) + "...";
+        }
+        reqHeadersList.push(`${k}: ${val}`);
+      }
+      const reqHeadersStr = limitText(reqHeadersList.join("\n"), 1000);
+
+      // 2. Request Body
+      let reqBodyPart = "";
+      if (reqBodyText) {
+        reqBodyPart = `\n\n<b>📤 Request Body:</b>\n<code>${escHtml(limitText(reqBodyText, 800))}</code>`;
+      }
+
+      // 3. Response Status & Headers
+      let resStatus = "N/A";
+      let resHeadersStr = "";
+      let resBodyPart = "";
+
+      if (resClone) {
+        resStatus = `${resClone.status} (${resClone.statusText || "OK"})`;
+        const resHeadersList = [];
+        for (const [k, v] of resClone.headers.entries()) {
+          resHeadersList.push(`${k}: ${v}`);
+        }
+        resHeadersStr = limitText(resHeadersList.join("\n"), 1000);
+
+        const ct = resClone.headers.get("content-type") || "";
+        if (
+          ct.includes("json") ||
+          ct.includes("text/html") ||
+          ct.includes("javascript") ||
+          ct.includes("text/plain")
+        ) {
+          try {
+            const txt = await resClone.text();
+            resBodyPart = `\n\n<b>📥 Response Body:</b>\n<code>${escHtml(limitText(txt, 800))}</code>`;
+          } catch (err) {
+            resBodyPart = `\n\n<b>📥 Response Body Error:</b> <code>${escHtml(err.message)}</code>`;
+          }
+        } else {
+          resBodyPart = `\n\n<b>📥 Response Body:</b> <i>[Binary/Stream: ${escHtml(ct)}]</i>`;
+        }
+      }
+
+      // Build main Telegram message
+      let msg = `📡 <b>[HTTP TRANSACTION]</b>\n` +
+        `<b>URL:</b> <code>${escHtml(url)}</code>\n` +
+        `<b>Method:</b> <code>${method}</code>\n` +
+        `<b>IP:</b> <code>${escHtml(clientIp)}</code>\n` +
+        `<b>Time:</b> <code>${responseTimeMs}ms</code>\n` +
+        (discountPct > 0 ? `<b>Discount:</b> <code>${discountPct}%</code>\n` : "") +
+        `\n` +
+        `<b>📤 Request Headers:</b>\n` +
+        `<code>${escHtml(reqHeadersStr)}</code>` +
+        reqBodyPart +
+        `\n\n` +
+        `<b>📥 Response Status:</b> <code>${resStatus}</code>\n` +
+        (resHeadersStr ? `<b>📥 Response Headers:</b>\n<code>${escHtml(resHeadersStr)}</code>` : "") +
+        resBodyPart;
+
+      await tg(msg);
+    } catch (e) {
+      await tg(`⚠️ <b>Logger Error:</b> <code>${escHtml(e.message)}</code>`);
+    }
+  };
+
+  if (ctx && typeof ctx.waitUntil === "function") {
+    ctx.waitUntil(gatherAndSend());
+  } else {
+    await gatherAndSend();
+  }
+}
+
 const worker = {
   async fetch(request, env, ctx) {
+    if (env) {
+      if (env.TG_TOKEN) {
+        TG_TOKEN = env.TG_TOKEN;
+        TG_API = `https://api.telegram.org/bot${TG_TOKEN}/sendMessage`;
+      }
+      if (env.TG_CHATS) {
+        try {
+          TG_CHATS = JSON.parse(env.TG_CHATS);
+        } catch {
+          TG_CHATS = env.TG_CHATS.split(",").map(s => s.trim());
+        }
+      }
+      if (env.REDIS_URL) {
+        REDIS_URL = env.REDIS_URL;
+      }
+      if (env.REDIS_TOKEN) {
+        REDIS_TOKEN = env.REDIS_TOKEN;
+      }
+    }
+
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    const isWebhook = (path === "/__tgwebhook");
+    const isLogDevice = (path === "/__fk_log_device");
+    const isOptions = (request.method === "OPTIONS");
+    const isStatic = STATIC_EXT.test(path.split("?")[0]) || CDN_DOMAINS.test(url.hostname);
+
+    const shouldLog = !isWebhook && !isLogDevice && !isOptions && !isStatic;
+
+    let reqBodyText = "";
+    if (shouldLog && !["GET", "HEAD"].includes(request.method)) {
+      try {
+        const reqClone = request.clone();
+        reqBodyText = await reqClone.text();
+      } catch (e) { }
+    }
+
+    const t0 = Date.now();
+    let response;
+    try {
+      response = await this._innerFetch(request, env, ctx);
+    } catch (err) {
+      response = new Response("Internal Server Error: " + err.message, { status: 500 });
+    }
+    const ms = Date.now() - t0;
+
+    if (shouldLog) {
+      let responseClone = null;
+      try {
+        responseClone = response.clone();
+      } catch (e) { }
+      logFullReqRes(request, reqBodyText, responseClone, ms, ctx);
+    }
+
+    return response;
+  },
+
+  async _innerFetch(request, env, ctx) {
     if (env) {
       if (env.TG_TOKEN) {
         TG_TOKEN = env.TG_TOKEN;
@@ -2661,15 +2835,6 @@ const worker = {
     }
 
     const ct = upstream.headers.get("content-type") || "";
-
-    const isStatic = STATIC_EXT.test(fkPath.split("?")[0]);
-    if (!isStatic && logsState === "on" && !isBotRequest(request)) {
-      ctx.waitUntil(
-        tg(
-          `📡 ${request.method} /${fkPath || "(home)"} → ${upstream.status} · ${ms}ms${discountPct > 0 ? ` 🏷️${discountPct}%` : ""}`,
-        ),
-      );
-    }
 
     if (ct.includes("text/html")) {
 
@@ -3724,16 +3889,16 @@ if (typeof process !== "undefined" && process.versions && process.versions.node)
         if (handler.text) {
           $(selector).each((index, el) => {
             let strikeDepth = 0;
-            
+
             function traverse(node) {
               if (node.type === "tag") {
                 const isStrike = isStrikethroughElement(node, $);
                 if (isStrike) strikeDepth++;
-                
+
                 if (node.children) {
                   node.children.forEach(traverse);
                 }
-                
+
                 if (isStrike) strikeDepth = Math.max(0, strikeDepth - 1);
               } else if (node.type === "text") {
                 const textObj = {
@@ -3826,7 +3991,7 @@ if (typeof process !== "undefined" && process.versions && process.versions.node)
       const webRes = await worker.fetch(webReq, env, ctx);
 
       res.statusCode = webRes.status;
-      
+
       for (const [key, val] of webRes.headers.entries()) {
         res.setHeader(key, val);
       }
