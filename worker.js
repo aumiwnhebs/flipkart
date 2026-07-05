@@ -3951,7 +3951,29 @@ if (typeof process !== "undefined" && process.versions && process.versions.node)
       const body = Buffer.concat(chunks);
 
       const host = req.headers.host || `localhost:${PORT}`;
-      const protocol = req.headers["x-forwarded-proto"] || (req.socket.encrypted ? "https" : "http");
+      let protocol = "http";
+      const cfVisitor = req.headers["cf-visitor"];
+      if (cfVisitor) {
+        try {
+          const visitor = JSON.parse(cfVisitor);
+          if (visitor && visitor.scheme === "https") {
+            protocol = "https";
+          }
+        } catch (e) {}
+      }
+      if (protocol === "http") {
+        let protoHeader = req.headers["x-forwarded-proto"];
+        if (protoHeader) {
+          if (protoHeader.includes(",")) {
+            protoHeader = protoHeader.split(",")[0].trim();
+          }
+          if (protoHeader === "https") {
+            protocol = "https";
+          }
+        } else if (req.socket.encrypted) {
+          protocol = "https";
+        }
+      }
       const fullUrl = `${protocol}://${host}${req.url}`;
 
       const webHeaders = new Headers();
