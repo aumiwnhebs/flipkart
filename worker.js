@@ -2804,8 +2804,8 @@ const worker = {
     }
 
 
-    if (upstream.status === 403 && request.method === "GET") {
-      const delays = [200, 500, 1000];
+    if ((upstream.status === 403 || upstream.status === 503) && request.method === "GET") {
+      const delays = [500, 1000, 1500, 2000, 2500];
       for (const delay of delays) {
         const c403 = upstream.headers.getAll
           ? upstream.headers.getAll("set-cookie")
@@ -2823,7 +2823,7 @@ const worker = {
             headers: buildMainHeaders(),
             redirect: "follow",
           });
-          if (retry.status !== 403) {
+          if (retry.status !== 403 && retry.status !== 503) {
             upstream = retry;
             break;
           }
@@ -2854,6 +2854,103 @@ const worker = {
 
     if (ct.includes("text/html")) {
 
+      // --- Challenge Page Detection ---
+      // Read the HTML to check if Flipkart/Cloudflare returned a challenge page
+      const upstreamHtml = await upstream.text();
+      const htmlLower = upstreamHtml.slice(0, 5000).toLowerCase();
+      const isChallengeResponse = (
+        upstream.status === 403 ||
+        upstream.status === 503 ||
+        htmlLower.includes("are you a human") ||
+        htmlLower.includes("are you human") ||
+        htmlLower.includes("verify you are human") ||
+        htmlLower.includes("checking your browser") ||
+        htmlLower.includes("just a moment") ||
+        htmlLower.includes("attention required") ||
+        htmlLower.includes("please verify") ||
+        htmlLower.includes("challenge-platform") ||
+        htmlLower.includes("cf-browser-verification") ||
+        htmlLower.includes("cf_chl_opt") ||
+        htmlLower.includes("_cf_chl") ||
+        htmlLower.includes("hcaptcha.com") ||
+        htmlLower.includes("challenges.cloudflare.com") ||
+        (htmlLower.includes("recaptcha") && !htmlLower.includes("flipkart"))
+      );
+
+      if (isChallengeResponse && request.method === "GET") {
+        // Serve a clean auto-retry page instead of the broken challenge
+        const retryPage = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Loading...</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f2f5;display:flex;justify-content:center;align-items:center;min-height:100vh;color:#333}
+.card{background:#fff;border-radius:16px;padding:40px 32px;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.08);max-width:380px;width:90%}
+.spinner{width:48px;height:48px;border:4px solid #e8e8e8;border-top:4px solid #2874f0;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px}
+@keyframes spin{to{transform:rotate(360deg)}}
+h2{font-size:18px;font-weight:600;margin-bottom:8px;color:#2874f0}
+p{font-size:14px;color:#666;line-height:1.5}
+.timer{font-size:24px;font-weight:700;color:#2874f0;margin:16px 0}
+.sub{font-size:12px;color:#999;margin-top:12px}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="spinner"></div>
+<h2>Please Wait</h2>
+<p>Page load ho raha hai, auto-retry chal raha hai...</p>
+<div class="timer" id="cd">3</div>
+<p class="sub">Agar page load na ho toh manually refresh karein</p>
+</div>
+<script>
+(function(){
+var RK='__fkChallengeRetry';
+var att=parseInt(sessionStorage.getItem(RK)||'0',10);
+if(att>=5){
+  sessionStorage.removeItem(RK);
+  document.querySelector('h2').textContent='Server Busy';
+  document.querySelector('p').textContent='Flipkart server abhi busy hai. Thodi der baad try karein.';
+  document.getElementById('cd').textContent='';
+  document.querySelector('.spinner').style.display='none';
+  return;
+}
+sessionStorage.setItem(RK,String(att+1));
+var sec=3;
+var el=document.getElementById('cd');
+var iv=setInterval(function(){
+  sec--;
+  el.textContent=sec;
+  if(sec<=0){
+    clearInterval(iv);
+    window.location.reload();
+  }
+},1000);
+})();
+</script>
+</body>
+</html>`;
+        const retryHeaders = new Headers({
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+          "Access-Control-Allow-Origin": origin || "*",
+          "Access-Control-Allow-Credentials": "true",
+        });
+        for (const sc of setCookies)
+          retryHeaders.append(
+            "Set-Cookie",
+            sc.replace(/;\s*domain=[^;]*/gi, "").replace(/;\s*secure/gi, ""),
+          );
+        return new Response(retryPage, { status: 200, headers: retryHeaders });
+      }
+
+      // Not a challenge page — reconstruct the response for HTMLRewriter
+      const upstreamForRewrite = new Response(upstreamHtml, {
+        status: upstream.status,
+        headers: upstream.headers,
+      });
 
       const domPriceScript = buildDomPriceScript(discountPct);
 
@@ -2866,6 +2963,7 @@ const worker = {
 
       const INTERCEPTOR = `<script>
 (function(){
+try{sessionStorage.removeItem('__fkChallengeRetry');}catch(e){}
 try {
   var originalUA = navigator.userAgent || '';
   var isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(originalUA);
@@ -3817,7 +3915,7 @@ XMLHttpRequest.prototype.send=function(){
 
       const serveStatus = upstream.status === 403 ? 200 : upstream.status;
       return rewriter.transform(
-        new Response(upstream.body, { status: serveStatus, headers: respH }),
+        new Response(upstreamForRewrite.body, { status: serveStatus, headers: respH }),
       );
     }
 
