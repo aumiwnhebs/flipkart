@@ -2964,9 +2964,7 @@ function injectH(h){
     h.set('fkua-User-Agent', finalFkua);
     h.set('X-User-Agent', finalXua);
     if (isChromium) {
-      h.set('sec-ch-ua','"Chromium";v="148", "Android WebView";v="148", "Not(A)Brand";v="99"');
-      h.set('sec-ch-ua-platform','"Android"');
-      h.set('sec-ch-ua-mobile','?1');
+      // Client-side browser blocks setting unsafe sec-ch-ua headers
     }
   } catch(e) {}
 }
@@ -3297,9 +3295,7 @@ XMLHttpRequest.prototype.send=function(){
     this.setRequestHeader('X-User-Agent', finalXua);
 
     if (isChromium) {
-      this.setRequestHeader('sec-ch-ua','"Chromium";v="148", "Android WebView";v="148", "Not(A)Brand";v="99"');
-      this.setRequestHeader('sec-ch-ua-platform','"Android"');
-      this.setRequestHeader('sec-ch-ua-mobile','?1');
+      // Client-side browser blocks setting unsafe sec-ch-ua headers
     }
   } catch(e) {}
 
@@ -3955,7 +3951,7 @@ if (typeof process !== "undefined" && process.versions && process.versions.node)
       const body = Buffer.concat(chunks);
 
       const host = req.headers.host || `localhost:${PORT}`;
-      const protocol = req.socket.encrypted ? "https" : "http";
+      const protocol = req.headers["x-forwarded-proto"] || (req.socket.encrypted ? "https" : "http");
       const fullUrl = `${protocol}://${host}${req.url}`;
 
       const webHeaders = new Headers();
