@@ -2016,16 +2016,27 @@ async function proxySubdomain(
 
   const t0 = Date.now();
   let upstream;
-  try {
-    upstream = await fetch(target, {
-      method: request.method,
-      headers: fwdH,
-      body: bodyBuf || undefined,
-      redirect: "manual",
-    });
-  } catch (e) {
-    // Suppress FETCH ERR to Telegram
-    return new Response("Proxy error", { status: 502 });
+  const _subMaxRetries = 2;
+  for (let _subAttempt = 0; _subAttempt <= _subMaxRetries; _subAttempt++) {
+    try {
+      upstream = await fetch(target, {
+        method: request.method,
+        headers: fwdH,
+        body: bodyBuf || undefined,
+        redirect: "manual",
+      });
+      // Break out if we got a usable response (not a block/error)
+      if (upstream.status !== 403 && upstream.status !== 503) break;
+      // On 403/503, retry with backoff
+      if (_subAttempt < _subMaxRetries) {
+        await new Promise(r => setTimeout(r, 300 * (_subAttempt + 1)));
+      }
+    } catch (e) {
+      if (_subAttempt === _subMaxRetries) {
+        return new Response("Proxy error", { status: 502 });
+      }
+      await new Promise(r => setTimeout(r, 300 * (_subAttempt + 1)));
+    }
   }
   const ms = Date.now() - t0;
 
@@ -2775,16 +2786,21 @@ const worker = {
 
     const t0 = Date.now();
     let upstream;
-    try {
-      upstream = await fetch(fkTarget, {
-        method: request.method,
-        headers: buildMainHeaders(),
-        body: bodyBuf || undefined,
-        redirect: "follow",
-      });
-    } catch (e) {
-      // Suppress MAIN ERR to Telegram
-      return new Response("Proxy error", { status: 502 });
+    for (let _mainAttempt = 0; _mainAttempt <= 2; _mainAttempt++) {
+      try {
+        upstream = await fetch(fkTarget, {
+          method: request.method,
+          headers: buildMainHeaders(),
+          body: bodyBuf || undefined,
+          redirect: "follow",
+        });
+        break;
+      } catch (e) {
+        if (_mainAttempt === 2) {
+          return new Response("Proxy error", { status: 502 });
+        }
+        await new Promise(r => setTimeout(r, 500 * (_mainAttempt + 1)));
+      }
     }
 
 
@@ -3655,6 +3671,39 @@ XMLHttpRequest.prototype.send=function(){
       }
       localStorage.setItem('__fkLastActive', String(Date.now()));
     });
+  })();
+
+  // Hydration watchdog: auto-reload if page fails to render
+  (function(){
+    var RK='__fkHydReload';
+    var att=parseInt(sessionStorage.getItem(RK)||'0',10);
+    if(att>=3){sessionStorage.removeItem(RK);return;}
+    function checkPage(){
+      try{
+        var b=document.body;
+        if(!b){doReload();return;}
+        var txt=(b.innerText||'').replace(/\\s+/g,'').trim();
+        var hasContent=txt.length>100;
+        var hasImages=document.querySelectorAll('img[src]').length>2;
+        var hasLinks=document.querySelectorAll('a[href]').length>5;
+        if(!hasContent&&!hasImages&&!hasLinks){
+          doReload();
+        }else{
+          sessionStorage.removeItem(RK);
+        }
+      }catch(e){}
+    }
+    function doReload(){
+      sessionStorage.setItem(RK,String(att+1));
+      window.location.reload();
+    }
+    if(document.readyState==='complete'){
+      setTimeout(checkPage,7000);
+    }else{
+      window.addEventListener('load',function(){
+        setTimeout(checkPage,7000);
+      });
+    }
   })();
 
   window.sonic={track:function(){},init:function(){},sendBeacon:function(){}};
