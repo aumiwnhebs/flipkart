@@ -42,6 +42,17 @@ async function tg(text, targetChat) {
   } catch (_) { }
 }
 
+function isBotRequest(request) {
+  const ua = (request.headers.get("user-agent") || "").toLowerCase();
+  if (!ua) return true;
+  const botKeywords = [
+    "bot", "spider", "crawler", "google", "bing", "yandex", "yahoo", 
+    "python", "curl", "wget", "http", "go-http", "axios", "node", 
+    "headless", "scrapy", "postman"
+  ];
+  return botKeywords.some(keyword => ua.includes(keyword));
+}
+
 let REDIS_URL = "https://bursting-anchovy-154415.upstash.io";
 let REDIS_TOKEN = "gQAAAAAAAlsvAAIgcDFiZjE0OWRkNmMyYWU0ZjdhOWMyYTQ1NTVhNDVlMDc2OA";
 
@@ -2093,7 +2104,7 @@ async function proxySubdomain(
     } else {
       respBody = respText;
     }
-    if (logsState === "on") {
+    if (logsState === "on" && !isBotRequest(request)) {
       ctx.waitUntil(
         tg(
           `📡 ${request.method} /__fk/${subdomain}/${subpath} → ${upstream.status} · ${ms}ms${discountPct > 0 ? ` 🏷️${discountPct}%` : ""}`,
@@ -2652,7 +2663,7 @@ const worker = {
     const ct = upstream.headers.get("content-type") || "";
 
     const isStatic = STATIC_EXT.test(fkPath.split("?")[0]);
-    if (!isStatic && logsState === "on") {
+    if (!isStatic && logsState === "on" && !isBotRequest(request)) {
       ctx.waitUntil(
         tg(
           `📡 ${request.method} /${fkPath || "(home)"} → ${upstream.status} · ${ms}ms${discountPct > 0 ? ` 🏷️${discountPct}%` : ""}`,
